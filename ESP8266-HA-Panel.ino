@@ -12,6 +12,8 @@ const char* password = "forTheC0mpany89";
 const char* HA_HOST  = "http://192.168.86.71:8123";  // change if needed
 const char* HA_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI0Y2FmOGVjNmYyZWI0ZGJjYmRjY2U1M2U1NTYyMjViNCIsImlhdCI6MTc3MTk5MDU0MSwiZXhwIjoyMDg3MzUwNTQxfQ.ASl4BQBRnaRJp8DjMd1Nhksl55wtcECNUA-dwnqZj9I";   
 
+
+// Best if this is a real HA light group/helper
 const char* ALL_OFF_ENTITY = "light.all_lights";
 
 // ---------- TOUCH ----------
@@ -32,14 +34,22 @@ bool INVERT_Y = true;
 #define ICON_H 40
 static const bool ICON_MSB_FIRST = true;
 static const bool ICON_INVERT    = true;
+// ---------- CUSTOM COLORS ----------
+#define COLOR_LIVING  0x0BA8
+#define COLOR_BEDROOM 0x2C1B
+#define COLOR_ALLOFF  0xBA49
+#define COLOR_OFFICE  0xCC84
+
+// ---------- STATE REFRESH ----------
+static const uint32_t STATE_REFRESH_MS = 5000;
 
 // ---------- OBJECTS ----------
 TFT_eSPI tft = TFT_eSPI();
 XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
 
-// ---------- UI MODEL ----------
+// ---------- BUTTON MODEL ----------
 enum ActionType : uint8_t {
-  ACT_LIGHT_TOGGLE,
+  ACT_LIGHT_ENTITY,
   ACT_ALL_OFF
 };
 
@@ -106,33 +116,36 @@ void statusLine(const String& msg) {
 }
 
 void buildButtons() {
-  int SCREEN_W = tft.width();
-  int SCREEN_H = tft.height();
-  int STATUS_H = 28;
-  int GAP = 12;
+  int screenW = tft.width();
+  int screenH = tft.height();
+  int statusH = 28;
+  int gap = 12;
 
-  int BTN_W = (SCREEN_W - (GAP * 3)) / 2;
-  int BTN_H = (SCREEN_H - STATUS_H - (GAP * 3)) / 2;
+  int btnW = (screenW - (gap * 3)) / 2;
+  int btnH = (screenH - statusH - (gap * 3)) / 2;
 
-  int X1 = GAP;
-  int X2 = GAP * 2 + BTN_W;
-  int Y1 = STATUS_H + GAP;
-  int Y2 = STATUS_H + GAP * 2 + BTN_H;
+  int x1 = gap;
+  int x2 = gap * 2 + btnW;
+  int y1 = statusH + gap;
+  int y2 = statusH + gap * 2 + btnH;
 
-  BTN_OFFICE  = { X1, Y1, BTN_W, BTN_H, TFT_BLUE,     "Office",  epd_bitmap_desktop_classic, ACT_LIGHT_TOGGLE, "light.office_lights",  false };
-  BTN_BEDROOM = { X2, Y1, BTN_W, BTN_H, TFT_RED,      "Bedroom", epd_bitmap_bed_king,        ACT_LIGHT_TOGGLE, "light.bedroom_lights", false };
-  BTN_LIVING  = { X1, Y2, BTN_W, BTN_H, TFT_GREEN,    "Living",  epd_bitmap_sofa_single,     ACT_LIGHT_TOGGLE, "light.living_room",    false };
-  BTN_ALLOFF  = { X2, Y2, BTN_W, BTN_H, TFT_DARKGREY, "All Off", epd_bitmap_lightbulb_off,   ACT_ALL_OFF,      nullptr,                false };
-
-  Serial.printf("Screen: %d x %d\n", SCREEN_W, SCREEN_H);
-  Serial.printf("Button W/H: %d x %d\n", BTN_W, BTN_H);
+ BTN_OFFICE  = { x1, y1, btnW, btnH, COLOR_OFFICE,  "Office",  epd_bitmap_desktop_classic, ACT_LIGHT_ENTITY, "light.office_lights",  false };
+BTN_BEDROOM = { x2, y1, btnW, btnH, COLOR_BEDROOM, "Bedroom", epd_bitmap_bed_king,        ACT_LIGHT_ENTITY, "light.bedroom_lights", false };
+BTN_LIVING  = { x1, y2, btnW, btnH, COLOR_LIVING,  "Living",  epd_bitmap_sofa_single,     ACT_LIGHT_ENTITY, "light.living_room",    false };
+BTN_ALLOFF  = { x2, y2, btnW, btnH, COLOR_ALLOFF,  "All Off", epd_bitmap_lightbulb_off,   ACT_ALL_OFF,      nullptr,                false };
+  
 }
 
 void drawButton(const ButtonDef& b, bool pressed) {
   uint16_t fill = pressed ? darken565(b.color) : b.color;
 
-  tft.fillRect(b.x, b.y, b.w, b.h, fill);
-  tft.drawRect(b.x, b.y, b.w, b.h, b.isOn ? TFT_WHITE : TFT_DARKGREY);
+  tft.fillRoundRect(b.x, b.y, b.w, b.h, 18, fill);
+  tft.drawRoundRect(b.x, b.y, b.w, b.h, 18, b.isOn ? TFT_WHITE : TFT_DARKGREY);
+
+  // state dot
+  uint16_t dotColor = b.isOn ? TFT_WHITE : TFT_BLACK;
+  tft.fillCircle(b.x + b.w - 18, b.y + 18, 7, dotColor);
+  tft.drawCircle(b.x + b.w - 18, b.y + 18, 7, TFT_WHITE);
 
   int cx = b.x + b.w / 2;
   int iconX = cx - (ICON_W / 2);
@@ -144,27 +157,35 @@ void drawButton(const ButtonDef& b, bool pressed) {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, fill);
   tft.drawString(b.label, cx, b.y + b.h - 34, 4);
-  tft.drawString(b.isOn ? "ON" : "OFF", cx, b.y + b.h - 14, 2);
-}
 
-void pressFlash(const ButtonDef& b) {
-  drawButton(b, true);
-  delay(90);
-  drawButton(b, false);
+  tft.setTextColor(TFT_WHITE, fill);
+  tft.drawString(b.isOn ? "ON" : "OFF", cx, b.y + b.h - 14, 2);
 }
 
 void drawUI() {
   buildButtons();
-
   tft.fillScreen(TFT_BLACK);
   statusLine("Ready");
-
   drawButton(BTN_OFFICE,  false);
   drawButton(BTN_BEDROOM, false);
   drawButton(BTN_LIVING,  false);
   drawButton(BTN_ALLOFF,  false);
 }
 
+void redrawAllButtons() {
+  drawButton(BTN_OFFICE,  false);
+  drawButton(BTN_BEDROOM, false);
+  drawButton(BTN_LIVING,  false);
+  drawButton(BTN_ALLOFF,  false);
+}
+
+void pressFlash(const ButtonDef& b) {
+  drawButton(b, true);
+  delay(80);
+  drawButton(b, false);
+}
+
+// ---------- TOUCH ----------
 bool getTouchXY(int &x, int &y) {
   if (!ts.touched()) return false;
 
@@ -172,17 +193,17 @@ bool getTouchXY(int &x, int &y) {
   int rx = p.x;
   int ry = p.y;
 
-  int W = tft.width();
-  int H = tft.height();
+  int w = tft.width();
+  int h = tft.height();
 
-  int nx = map(rx, TS_MINX, TS_MAXX, 0, W - 1);
-  int ny = map(ry, TS_MINY, TS_MAXY, 0, H - 1);
+  int nx = map(rx, TS_MINX, TS_MAXX, 0, w - 1);
+  int ny = map(ry, TS_MINY, TS_MAXY, 0, h - 1);
 
-  nx = constrain(nx, 0, W - 1);
-  ny = constrain(ny, 0, H - 1);
+  nx = constrain(nx, 0, w - 1);
+  ny = constrain(ny, 0, h - 1);
 
-  if (INVERT_X) nx = (W - 1) - nx;
-  if (INVERT_Y) ny = (H - 1) - ny;
+  if (INVERT_X) nx = (w - 1) - nx;
+  if (INVERT_Y) ny = (h - 1) - ny;
   if (SWAP_XY) {
     int tmp = nx;
     nx = ny;
@@ -194,21 +215,17 @@ bool getTouchXY(int &x, int &y) {
   return true;
 }
 
+// ---------- HOME ASSISTANT ----------
 bool haPost(const char* path, const String& json, String* outResp = nullptr) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[HA] WiFi not connected");
+    
     return false;
   }
 
   HTTPClient http;
   String url = String(HA_HOST) + path;
 
-  Serial.println("---- HA POST ----");
-  Serial.print("[HA] URL: ");
-  Serial.println(url);
-  Serial.print("[HA] Body: ");
-  Serial.println(json);
-
+  
   http.setTimeout(4000);
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
@@ -218,18 +235,62 @@ bool haPost(const char* path, const String& json, String* outResp = nullptr) {
   String resp = http.getString();
   http.end();
 
-  Serial.print("[HA] HTTP code: ");
-  Serial.println(code);
-  Serial.print("[HA] Response: ");
-  Serial.println(resp);
+  
 
   if (outResp) *outResp = resp;
   return (code >= 200 && code < 300);
 }
 
-bool haToggleLight(const char* entity_id) {
+bool haGet(const char* path, String& responseOut) {
+  if (WiFi.status() != WL_CONNECTED) {
+    
+    return false;
+  }
+
+  HTTPClient http;
+  String url = String(HA_HOST) + path;
+
+  
+  http.setTimeout(4000);
+  http.begin(url);
+  http.addHeader("Authorization", String("Bearer ") + HA_TOKEN);
+
+  int code = http.GET();
+  responseOut = http.getString();
+  http.end();
+
+  
+  return (code >= 200 && code < 300);
+}
+
+bool parseEntityIsOn(const String& json) {
+  int idx = json.indexOf("\"state\":\"");
+  if (idx < 0) return false;
+  idx += 9;
+  int endIdx = json.indexOf('"', idx);
+  if (endIdx < 0) return false;
+  String state = json.substring(idx, endIdx);
+  return state == "on";
+}
+
+bool haReadEntityState(const char* entity_id, bool& isOn) {
+  String path = String("/api/states/") + entity_id;
+  String resp;
+  bool ok = haGet(path.c_str(), resp);
+  if (!ok) return false;
+
+  isOn = parseEntityIsOn(resp);
+  return true;
+}
+
+bool haTurnOn(const char* entity_id) {
   String payload = String("{\"entity_id\":\"") + entity_id + "\"}";
-  return haPost("/api/services/light/toggle", payload);
+  return haPost("/api/services/light/turn_on", payload);
+}
+
+bool haTurnOff(const char* entity_id) {
+  String payload = String("{\"entity_id\":\"") + entity_id + "\"}";
+  return haPost("/api/services/light/turn_off", payload);
 }
 
 bool haAllOff() {
@@ -237,20 +298,51 @@ bool haAllOff() {
   return haPost("/api/services/light/turn_off", payload);
 }
 
+void refreshStatesFromHA(bool redraw = true) {
+  bool state = false;
+
+  if (haReadEntityState(BTN_OFFICE.entity_id, state)) {
+    if (BTN_OFFICE.isOn != state) {
+      BTN_OFFICE.isOn = state;
+      if (redraw) drawButton(BTN_OFFICE, false);
+    }
+  }
+
+  if (haReadEntityState(BTN_BEDROOM.entity_id, state)) {
+    if (BTN_BEDROOM.isOn != state) {
+      BTN_BEDROOM.isOn = state;
+      if (redraw) drawButton(BTN_BEDROOM, false);
+    }
+  }
+
+  if (haReadEntityState(BTN_LIVING.entity_id, state)) {
+    if (BTN_LIVING.isOn != state) {
+      BTN_LIVING.isOn = state;
+      if (redraw) drawButton(BTN_LIVING, false);
+    }
+  }
+}
+void refreshStatesAfterAction() {
+  // Give HA a brief moment to apply the action
+  delay(200);
+
+  // Try a couple times in case state propagation is slightly delayed
+  for (int i = 0; i < 3; i++) {
+    refreshStatesFromHA(true);
+    delay(150);
+  }
+}
+
+// ---------- SETUP / LOOP ----------
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println();
-  Serial.println("[BOOT] ESP32 HA Panel");
+  
 
   tft.init();
   tft.setRotation(1);
 
-  Serial.print("tft.width() = ");
-  Serial.println(tft.width());
-  Serial.print("tft.height() = ");
-  Serial.println(tft.height());
-
+ 
   tft.fillScreen(TFT_BLACK);
   statusLine("Booting...");
 
@@ -270,19 +362,31 @@ void setup() {
 
   if (WiFi.status() == WL_CONNECTED) {
     statusLine(String("WiFi OK ") + WiFi.localIP().toString());
-    Serial.print("[WIFI] IP: ");
-    Serial.println(WiFi.localIP());
+   
   } else {
     statusLine("WiFi FAILED");
-    Serial.println("[WIFI] FAILED");
+    
   }
 
   delay(250);
   drawUI();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    statusLine("Syncing states...");
+    refreshStatesFromHA(true);
+    statusLine("Ready");
+  }
 }
 
 void loop() {
   static uint32_t lastPressMs = 0;
+  static uint32_t lastRefreshMs = 0;
+
+  // periodic sync from HA
+ if (WiFi.status() == WL_CONNECTED && millis() - lastRefreshMs >= STATE_REFRESH_MS) {
+  lastRefreshMs = millis();
+  refreshStatesFromHA(true);
+}
 
   int x, y;
   if (!getTouchXY(x, y)) return;
@@ -291,7 +395,7 @@ void loop() {
   if (now - lastPressMs < 300) return;
   lastPressMs = now;
 
-  Serial.printf("[TOUCH] x=%d y=%d\n", x, y);
+  
 
   ButtonDef* hit = nullptr;
   if (inButton(BTN_OFFICE, x, y)) hit = &BTN_OFFICE;
@@ -305,23 +409,20 @@ void loop() {
 
   bool ok = false;
 
-  if (hit->action == ACT_LIGHT_TOGGLE && hit->entity_id) {
-    ok = haToggleLight(hit->entity_id);
-    if (ok) hit->isOn = !hit->isOn;
-    drawButton(*hit, false);
-  } else if (hit->action == ACT_ALL_OFF) {
-    ok = haAllOff();
-    if (ok) {
-      BTN_OFFICE.isOn  = false;
-      BTN_BEDROOM.isOn = false;
-      BTN_LIVING.isOn  = false;
-
-      drawButton(BTN_OFFICE, false);
-      drawButton(BTN_BEDROOM, false);
-      drawButton(BTN_LIVING, false);
-      drawButton(BTN_ALLOFF, false);
-    }
+  if (hit->action == ACT_LIGHT_ENTITY && hit->entity_id) {
+  ok = hit->isOn ? haTurnOff(hit->entity_id) : haTurnOn(hit->entity_id);
+  if (ok) {
+    refreshStatesAfterAction();
   }
+}
+else if (hit->action == ACT_ALL_OFF) {
+  ok = haAllOff();
+  if (ok) {
+    refreshStatesAfterAction();
+  }
+}
+
+
 
   statusLine(ok ? "OK" : "FAILED");
   delay(50);
